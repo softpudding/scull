@@ -27,8 +27,19 @@
 #include <linux/poll.h>
 #include <linux/cdev.h>
 #include <linux/sched.h>
-#include <asm/uaccess.h>
 #include <linux/version.h>
+
+/* 
+ * <linux/uaccess.h> was added in kernel version 2.6.18, and should be
+ * included in preference to <asm/uaccess.h>.  In particular, copy_to_user()
+ * and copy_from_user() were moved to <linux/uaccess.h> in kernel version
+ * 4.12.
+ */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,18)
+#include <linux/uaccess.h>
+#else
+#include <asm/uaccess.h>
+#endif
 
 #include "scull.h"		/* local definitions */
 
