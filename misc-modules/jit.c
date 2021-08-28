@@ -20,6 +20,9 @@
 #include <linux/init.h>
 
 #include <linux/sched.h>
+
+#include <linux/timekeeping.h>
+
 #include <linux/time.h>
 #include <linux/timer.h>
 #include <linux/kernel.h>
@@ -27,6 +30,8 @@
 #include <linux/types.h>
 #include <linux/spinlock.h>
 #include <linux/interrupt.h>
+
+#include <linux/version.h>
 
 #include <asm/hardirq.h>
 /*
@@ -53,11 +58,21 @@ enum jit_files {
  * This function prints one line of data, after sleeping one second.
  * It can sleep in different ways, according to the data pointer
  */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
 int jit_fn(char *buf, char **start, off_t offset,
 	      int len, int *eof, void *data)
+#else
+ssize_t jit_fn(struct file * filp, char *buf,
+	   size_t count,loff_t *offp ) 
+#endif
 {
 	unsigned long j0, j1; /* jiffies */
 	wait_queue_head_t wait;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,10,0)
+	char * data;
+	int len;
+	data = PDE_DATA(file_inode(filp));
+#endif
 
 	init_waitqueue_head (&wait);
 	j0 = jiffies;
@@ -84,35 +99,70 @@ int jit_fn(char *buf, char **start, off_t offset,
 	j1 = jiffies; /* actual value after we delayed */
 
 	len = sprintf(buf, "%9li %9li\n", j0, j1);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
 	*start = buf;
+#endif
 	return len;
 }
 
 /*
  * This file, on the other hand, returns the current time forever
  */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
 int jit_currentime(char *buf, char **start, off_t offset,
                    int len, int *eof, void *data)
+#else
+ssize_t jit_currentime(struct file * filp, char * buf, 
+		   size_t count, loff_t * offp)
+#endif
 {
+#ifndef _LINUX_KTIME_H
 	struct timeval tv1;
 	struct timespec tv2;
+#else   
+	ktime_t kt;
+	struct timespec64 ts;
+	s64 kt_s,kt_us;
+#endif
 	unsigned long j1;
 	u64 j2;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,10,0)
+	char * data;
+	int len;
+	data = PDE_DATA(file_inode(filp));
+#endif
 	/* get them four */
 	j1 = jiffies;
 	j2 = get_jiffies_64();
+#ifndef _LINUX_KTIME_H	
 	do_gettimeofday(&tv1);
-	tv2 = current_kernel_time();
+	tv2 = get_kernel_time();
+#else
+	kt = ktime_get_real();
+	kt_us = ktime_to_us(kt);
+	kt_s = kt_us / 1000000;
+	kt_us = kt_us % 1000000;
+	ktime_get_coarse_real_ts64(&ts);
+#endif
+
 
 	/* print */
 	len=0;
 	len += sprintf(buf,"0x%08lx 0x%016Lx %10i.%06i\n"
 		       "%40i.%09i\n",
 		       j1, j2,
-		       (int) tv1.tv_sec, (int) tv1.tv_usec,
+#ifndef _LINUX_KTIME_H
+		       (int) tv1.tv_sec, (int) tv2.tv_usec,
 		       (int) tv2.tv_sec, (int) tv2.tv_nsec);
+#else
+		       (int) kt_s	,(int) kt_us,
+		       (int) ts.tv_sec	,(int) ts.tv_nsec);
+#endif
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
 	*start = buf;
+#endif
 	return len;
 }
 
@@ -135,9 +185,15 @@ struct jit_data {
 };
 #define JIT_ASYNC_LOOPS 5
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
 void jit_timer_fn(unsigned long arg)
 {
 	struct jit_data *data = (struct jit_data *)arg;
+#else
+void jit_timer_fn(struct timer_list * list)
+{
+	struct jit_data * data = from_timer(data, list, timer);
+#endif
 	unsigned long j = jiffies;
 	data->buf += sprintf(data->buf, "%9li  %3li     %i    %6i   %i   %s\n",
 			     j, j - data->prevjiffies, in_interrupt() ? 1 : 0,
@@ -153,8 +209,13 @@ void jit_timer_fn(unsigned long arg)
 }
 
 /* the /proc function: allocate everything to allow concurrency */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
 int jit_timer(char *buf, char **start, off_t offset,
 	      int len, int *eof, void *unused_data)
+#else
+ssize_t jit_timer(struct file * filp, char *buf,
+	   size_t count,loff_t *offp )
+#endif
 {
 	struct jit_data *data;
 	char *buf2 = buf;
@@ -163,8 +224,9 @@ int jit_timer(char *buf, char **start, off_t offset,
 	data = kmalloc(sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
-
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
 	init_timer(&data->timer);
+#endif
 	init_waitqueue_head (&data->wait);
 
 	/* write the first lines in the buffer */
@@ -179,10 +241,15 @@ int jit_timer(char *buf, char **start, off_t offset,
 	data->loops = JIT_ASYNC_LOOPS;
 	
 	/* register the timer */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
 	data->timer.data = (unsigned long)data;
 	data->timer.function = jit_timer_fn;
 	data->timer.expires = j + tdelay; /* parameter */
 	add_timer(&data->timer);
+#else
+	data->timer.expires = j + tdelay;
+	timer_setup(&data->timer,jit_timer_fn,0);
+#endif
 
 	/* wait for the buffer to fill */
 	wait_event_interruptible(data->wait, !data->loops);
@@ -190,7 +257,9 @@ int jit_timer(char *buf, char **start, off_t offset,
 		return -ERESTARTSYS;
 	buf2 = data->buf;
 	kfree(data);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
 	*eof = 1;
+#endif
 	return buf2 - buf;
 }
 
@@ -214,13 +283,23 @@ void jit_tasklet_fn(unsigned long arg)
 }
 
 /* the /proc function: allocate everything to allow concurrency */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
 int jit_tasklet(char *buf, char **start, off_t offset,
 	      int len, int *eof, void *arg)
+#else
+ssize_t jit_tasklet(struct file * filp, char *buf,
+	   size_t count,loff_t *offp )
+#endif
 {
 	struct jit_data *data;
 	char *buf2 = buf;
 	unsigned long j = jiffies;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,10,0)
+	long hi;
+	hi = (long)PDE_DATA(file_inode(filp));
+#else
 	long hi = (long)arg;
+#endif
 
 	data = kmalloc(sizeof(*data), GFP_KERNEL);
 	if (!data)
@@ -254,7 +333,9 @@ int jit_tasklet(char *buf, char **start, off_t offset,
 		return -ERESTARTSYS;
 	buf2 = data->buf;
 	kfree(data);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
 	*eof = 1;
+#endif
 	return buf2 - buf;
 }
 
@@ -262,6 +343,7 @@ int jit_tasklet(char *buf, char **start, off_t offset,
 
 int __init jit_init(void)
 {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
 	create_proc_read_entry("currentime", 0, NULL, jit_currentime, NULL);
 	create_proc_read_entry("jitbusy", 0, NULL, jit_fn, (void *)JIT_BUSY);
 	create_proc_read_entry("jitsched",0, NULL, jit_fn, (void *)JIT_SCHED);
@@ -271,7 +353,53 @@ int __init jit_init(void)
 	create_proc_read_entry("jitimer", 0, NULL, jit_timer, NULL);
 	create_proc_read_entry("jitasklet", 0, NULL, jit_tasklet, NULL);
 	create_proc_read_entry("jitasklethi", 0, NULL, jit_tasklet, (void *)1);
+#elif LINUX_VERSION_CODE < KERNEL_VERSION(5,6,0)
+	struct file_operations fops_currentime = {
+	.read = jit_currentime
+	};
+	struct file_operations fops_fn = {
+	.read = jit_fn
+	};
+	struct file_operations fops_timer = {
+	.read = jit_timer
+	};
+	struct file_operations fops_tasklet = {
+	.read = jit_tasklet
+	};
 
+	proc_create_data("currentime", 0, NULL, &fops_currentime, NULL);
+	proc_create_data("jitbusy", 0, NULL, &fops_fn, (void *)JIT_BUSY);
+	proc_create_data("jitsched",0, NULL, &fops_fn, (void *)JIT_SCHED);
+	proc_create_data("jitqueue",0, NULL, &fops_fn, (void *)JIT_QUEUE);
+	proc_create_data("jitschedto", 0, NULL, &fops_fn, (void *)JIT_SCHEDTO);
+
+	proc_create_data("jitimer", 0, NULL, &fops_timer, NULL);
+	proc_create_data("jitasklet", 0, NULL, &fops_tasklet, NULL);
+	proc_create_data("jitasklethi", 0, NULL, &fops_tasklet, (void *)1);
+#else
+	struct proc_ops pops_currentime = {
+	.proc_read = jit_currentime
+	};
+	struct proc_ops pops_fn = {
+	.proc_read = jit_fn
+	};
+	struct proc_ops pops_timer = {
+	.proc_read = jit_timer
+	};
+	struct proc_ops pops_tasklet = {
+	.proc_read = jit_tasklet
+	};
+
+	proc_create_data("currentime", 0, NULL, &pops_currentime, NULL);
+	proc_create_data("jitbusy", 0, NULL, &pops_fn, (void *)JIT_BUSY);
+	proc_create_data("jitsched",0, NULL, &pops_fn, (void *)JIT_SCHED);
+	proc_create_data("jitqueue",0, NULL, &pops_fn, (void *)JIT_QUEUE);
+	proc_create_data("jitschedto", 0, NULL, &pops_fn, (void *)JIT_SCHEDTO);
+
+	proc_create_data("jitimer", 0, NULL, &pops_timer, NULL);
+	proc_create_data("jitasklet", 0, NULL, &pops_tasklet, NULL);
+	proc_create_data("jitasklethi", 0, NULL, &pops_tasklet, (void *)1);
+#endif
 	return 0; /* success */
 }
 
