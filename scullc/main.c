@@ -26,9 +26,9 @@
 #include <linux/proc_fs.h>
 #include <linux/fcntl.h>	/* O_ACCMODE */
 #include <linux/aio.h>
-#include <asm/uaccess.h>
 #include "scullc.h"		/* local definitions */
 
+#include "versionpatch.h"
 
 int scullc_major =   SCULLC_MAJOR;
 int scullc_devs =    SCULLC_DEVS;	/* number of bare scullc devices */
@@ -285,9 +285,9 @@ long scullc_ioctl (struct file *filp,
 	 * "write" is reversed
 	 */
 	if (_IOC_DIR(cmd) & _IOC_READ)
-		err = !access_ok(VERIFY_WRITE, (void __user *)arg, _IOC_SIZE(cmd));
+		err = !access_ok((void __user *)arg, _IOC_SIZE(cmd));
 	else if (_IOC_DIR(cmd) & _IOC_WRITE)
-		err =  !access_ok(VERIFY_READ, (void __user *)arg, _IOC_SIZE(cmd));
+		err =  !access_ok((void __user *)arg, _IOC_SIZE(cmd));
 	if (err)
 		return -EFAULT;
 
@@ -389,7 +389,7 @@ loff_t scullc_llseek (struct file *filp, loff_t off, int whence)
 	return newpos;
 }
 
-
+#ifdef SCULL_AIO
 /*
  * A simple asynchronous I/O implementation.
  */
@@ -484,7 +484,7 @@ static ssize_t scullc_aio_write(struct kiocb *iocb, const struct iovec *iov,
 {
 	return scullc_defer_op(1, iocb, iov, nr_segs, pos);
 }
- 
+#endif
 
 /*
  * The fops
@@ -498,8 +498,10 @@ struct file_operations scullc_fops = {
 	.unlocked_ioctl = scullc_ioctl,
 	.open =	     scullc_open,
 	.release =   scullc_release,
+#ifdef SCULL_AIO
 	.aio_read =  scullc_aio_read,
 	.aio_write = scullc_aio_write,
+#endif
 };
 
 int scullc_trim(struct scullc_dev *dev)
