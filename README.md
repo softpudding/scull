@@ -1,34 +1,23 @@
 # Scull sample source code for latest kernel version.
 
+This is softpudding, trying to move old-version code provided by Linux Device Driver (3rd edition) to a modern version kernel.
+
 ## Target kernel version
 
-2.6.35
+5.11.0
 
 ## Current status
 
 * Can build and work
-  * simple
-  * misc-modules
-  * misc-progs
   * scull
-  * scullp
-  * scullc
-  * scullv
-  * sbull
 
 * Can build but do not work
-  * lddbus
-  * sculld
+  * misc-modules
 
 * Can build but not tested yet
-  * short
-  * shortprint
 
 * Can not build
-  * pci
-  * tty
-  * usb
-  * snull
+  * all others
 
 ## License
 
